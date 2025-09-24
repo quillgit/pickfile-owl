@@ -43,18 +43,21 @@ pickfile-owl/
 ### Setup Steps
 
 1. **Clone the repository**
-   ```bash
+
+```sh
    git clone <repository-url> pickfile-owl
    cd pickfile-owl
-   ```
+```
 
 2. **Configure the application**
-   ```bash
+
+```sh
    cp config.php.example config.php
-   ```
-   
-   Edit `config.php` with your settings:
-   ```php
+```
+
+Edit `config.php` with your settings:
+
+```php
    return [
        'db_path' => __DIR__ . '/data/pickfile.db',
        'nextcloud_url' => 'https://your-nextcloud.com',
@@ -63,12 +66,13 @@ pickfile-owl/
        'oauth_redirect_uri' => 'https://your-domain.com/nextcloud/callback',
        'app_secret' => 'your-random-secret-key'
    ];
-   ```
+```
 
 3. **Set up the database**
-   ```bash
+
+```sh
    sqlite3 data/pickfile.db < migrations/create_tables.sql
-   ```
+```
 
 4. **Configure web server**
    Point your web server document root to the `public/` directory.
@@ -88,10 +92,11 @@ This application is specifically designed to integrate with the **OWL-Plantation
 ### Integration Points
 
 1. **File Picker Embedding**
-   ```html
+
+```html
    <iframe src="https://your-domain.com/picker.html" 
            width="100%" height="600px"></iframe>
-   ```
+```
 
 2. **API Endpoints for ERP**
    - `GET /nextcloud/list` - Browse Nextcloud files
@@ -100,13 +105,14 @@ This application is specifically designed to integrate with the **OWL-Plantation
    - `POST /nextcloud/connect` - OAuth authentication
 
 3. **Event Handling**
-   ```javascript
+
+```js
    window.addEventListener('faillink-picked', function(event) {
        // Handle picked file in ERP system
        const fileData = event.detail;
        // Integrate with OWL-Plantation workflows
    });
-   ```
+```
 
 ## 🔐 Security Features
 
@@ -128,6 +134,7 @@ This application is specifically designed to integrate with the **OWL-Plantation
 - `GET /faillink/download/{id}` - Download file via faillink
 
 ### Response Format
+
 ```json
 {
   "id": "faillink-id",
@@ -138,20 +145,7 @@ This application is specifically designed to integrate with the **OWL-Plantation
 }
 ```
 
-## 🌱 OWL-Plantation System Compatibility
-
-This file picker is optimized for plantation management workflows:
-
-- **Document Management** - Handle plantation certificates, reports, and documentation
-- **Image Integration** - Support for field photos and inspection images  
-- **Data Import** - CSV and Excel file integration for plantation data
-- **Report Generation** - Access to stored reports and analytics files
-- **Compliance Documents** - Secure access to regulatory and certification files
-
-## 🛠️ Development
-
-### Local Development
-```bash
+```sh
 # Start PHP development server
 php -S localhost:8000 -t public/
 
@@ -160,7 +154,8 @@ open http://localhost:8000
 ```
 
 ### Database Migrations
-```bash
+
+```sh
 # Run migrations
 sqlite3 data/pickfile.db < migrations/create_tables.sql
 ```
@@ -187,11 +182,3 @@ sqlite3 data/pickfile.db < migrations/create_tables.sql
 ## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🏷️ Tags
-
-`#nextcloud` `#file-picker` `#erp-integration` `#owl-plantation` `#php` `#vue-js` `#webdav` `#oauth2` `#plantation-management` `#document-management`
-
----
-
-**Built for OWL-Plantation System** - Streamlining plantation management through seamless file integration.

@@ -16,7 +16,7 @@ function json($d,$c=200){ http_response_code($c); header('Content-Type: applicat
 if ($path === '/nextcloud/connect'){
     $state = base64_encode(json_encode(['uid'=>$_SESSION['erp_user_id'],'nonce'=>bin2hex(random_bytes(8))])); $_SESSION['nc_oauth_state']=$state; header('Location: '.$nc->getAuthorizeUrl($state)); exit;
 }
-if ($path === '/nextcloud/callback'){
+if ($path === '//nextcloud/callback'){
     $code = $_GET['code'] ?? null; $state = $_GET['state'] ?? null; if (!$code || $state !== ($_SESSION['nc_oauth_state'] ?? null)) { echo 'Invalid OAuth response'; exit; }
     $resp = $nc->fetchAccessToken($code); if ($resp['status']>=400 || empty($resp['json'])){ echo 'Token exchange failed'; exit; }
     $j = $resp['json']; $accessToken=$j['access_token']; $refreshToken=$j['refresh_token'] ?? null; $expiresIn=$j['expires_in'] ?? 3600; $ncUser = $j['user'] ?? 'unknown'; $tokenStore->save($_SESSION['erp_user_id'],$ncUser,$accessToken,$refreshToken,$expiresIn); echo '<h3>Connected</h3><p>Close this window and return to ERP.</p>'; exit;

@@ -1,0 +1,30 @@
+# Enable RewriteEngine
+RewriteEngine On
+
+# If the request is for an existing file or directory, serve it directly
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# Otherwise route everything to index.php
+RewriteRule ^ index.php [QSA,L]
+
+# Security headers (optional but recommended)
+<IfModule mod_headers.c>
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Content-Security-Policy "default-src 'self' 'unsafe-inline' https://unpkg.com"
+</IfModule>
+
+# Deny direct access to config files
+<FilesMatch "(^config\.php|\.sql|\.env)$">
+    Require all denied
+</FilesMatch>
+
+# Deny access to src/ outside of PHP
+<Directory "../src">
+    Require all denied
+</Directory>
+
+# Ensure PHP errors aren’t leaked
+php_flag display_errors Off

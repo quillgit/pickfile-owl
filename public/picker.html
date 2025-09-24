@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Nextcloud Picker (Embed)</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    .picker { font-family: Arial, sans-serif; padding: 12px; border: 1px solid #eee; border-radius: 6px; }
+    .breadcrumbs{font-size:0.9em;margin-bottom:8px}
+    ul{list-style:none;padding:0}
+    li{margin:6px 0}
+    button{margin-left:8px}
+  </style>
+</head>
+<body>
+<div id="nextcloud-picker" class="picker"></div>
+
+<script>
+const { createApp, ref, onMounted } = Vue;
+createApp({
+  template: `
+    <div>
+      <div class="breadcrumbs">Path: {{ path }}</div>
+      <div style="margin-bottom:8px">
+        <button @click="connect">Connect Nextcloud</button>
+      </div>
+      <ul>
+        <li v-for="item in items" :key="item.href">
+          <template v-if="item.is_dir">
+            <button @click="open(item)">📁 {{ item.name }}</button>
+          </template>
+          <template v-else>
+            <span>{{ item.name }} ({{ item.size || '-' }})</span>
+            <button @click="pick(item)">Pick</button>
+            <button @click="preview(item)">Preview</button>
+          </template>
+        </li>
+      </ul>
+    </div>
+  `,
+  setup(){
+    const items = ref([]);
+    const path = ref('/');
+    async function fetchList(){
+      const res = await fetch(`/nextcloud/list?path=${encodeURIComponent(path.value)}`,{credentials:'include'});
+      if (res.status === 401){ alert('Please connect your Nextcloud account first.'); return; }
+      items.value = await res.json();
+    }
+    function open(dir){ path.value = dir.href; fetchList(); }
+    function connect(){ window.open('/nextcloud/connect','nc_connect','width=900,height=700'); }
+    async function pick(item){
+      const res = await fetch('/nextcloud/pick',{ method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ href:item.href, name:item.name, size:item.size, mime:item.mime }) });
+      const j = await res.json(); if (j.id) { alert('Picked: ' + item.name); window.dispatchEvent(new CustomEvent('faillink-picked',{detail:j})); }
+    }
+    function preview(item){
+      // open proxied download in new tab (ERP will check permission)
+      // We need the faillink id — but for quick preview we can stream directly using /faillink/download after pick
+      // For now prompt the user to pick then preview
+      alert('To preview, pick the file first (click Pick). Then use ERP UI to open it.');
+    }
+    onMounted(fetchList);
+    return { items, path, open, pick, connect, preview };
+  }
+}).mount('#nextcloud-picker');
+</script>
+</body>
+</html>

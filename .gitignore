@@ -1,0 +1,37 @@
+# Configuration files with sensitive data
+config.php
+
+# SQLite database files
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Composer dependencies (if using Composer)
+vendor/
+composer.lock
+
+# Node modules (if using npm/yarn)
+node_modules/

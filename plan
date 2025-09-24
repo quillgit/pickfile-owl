@@ -1,0 +1,283 @@
+// Project: Nextcloud Private Picker — Modular PHP Native (No Composer)
+// Structure (place in project root):
+//
+// /config.php
+// /src/NCClient.php
+// /src/TokenStore.php
+// /src/FaillinkModel.php
+// /src/UserModel.php
+// /public/index.php
+// /public/.htaccess (optional)
+// /public/picker.html   <-- Vue CDN embeddable picker
+// /migrations/create_tables.sql
+// /storage/ (writable if you later download files)
+//
+// NOTE: This file is a single-text bundle showing all files. Copy each section into separate files.
+
+/* ----------------------- config.php ----------------------- */
+<?php
+return [
+    'db_dsn' => 'sqlite:' . __DIR__ . '/data/faillink_oauth.sqlite',
+    'db_user' => null,
+    'db_pass' => null,
+    'nextcloud' => [
+        'base_url' => 'https://your-nextcloud.example.com',
+        'client_id' => 'YOUR_CLIENT_ID',
+        'client_secret' => 'YOUR_CLIENT_SECRET',
+        'redirect_uri' => null, // auto-detect
+    ],
+    'app_secret' => 'change_me_random',
+];
+
+/* ----------------------- src/NCClient.php ----------------------- */
+<?php
+// Minimal Nextcloud OAuth + WebDAV client using cURL. No external deps.
+namespace Faillink\Src;
+
+class NCClient {
+    private $baseUrl; private $clientId; private $clientSecret; private $redirectUri;
+    public function __construct(array $conf) {
+        $this->baseUrl = rtrim($conf['base_url'], '/');
+        $this->clientId = $conf['client_id'];
+        $this->clientSecret = $conf['client_secret'];
+        $this->redirectUri = $conf['redirect_uri'] ?? null;
+    }
+    private function autoRedirectUri(){
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        return $scheme . '://' . $_SERVER['HTTP_HOST'] . '/nextcloud/callback';
+    }
+    public function getAuthorizeUrl(string $state=''){
+        $redirect = $this->redirectUri ?: $this->autoRedirectUri();
+        $url = $this->baseUrl . '/index.php/apps/oauth2/authorize';
+        return $url . '?' . http_build_query(['response_type'=>'code','client_id'=>$this->clientId,'redirect_uri'=>$redirect,'state'=>$state]);
+    }
+    private function httpPostForm(string $url, array $data){
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Accept: application/json']);
+        $resp = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return ['status'=>$code,'json'=>json_decode($resp,true),'raw'=>$resp];
+    }
+    public function fetchAccessToken(string $code){
+        $url = $this->baseUrl . '/index.php/apps/oauth2/api/v1/token';
+        $data = ['grant_type'=>'authorization_code','code'=>$code,'redirect_uri'=>$this->redirectUri ?: $this->autoRedirectUri(),'client_id'=>$this->clientId,'client_secret'=>$this->clientSecret];
+        return $this->httpPostForm($url,$data);
+    }
+    public function refreshToken(string $refreshToken){
+        $url = $this->baseUrl . '/index.php/apps/oauth2/api/v1/token';
+        $data = ['grant_type'=>'refresh_token','refresh_token'=>$refreshToken,'client_id'=>$this->clientId,'client_secret'=>$this->clientSecret];
+        return $this->httpPostForm($url,$data);
+    }
+    public function propfind(string $ncUser, string $path, string $accessToken){
+        $prefix = $this->baseUrl . '/remote.php/dav/files/' . rawurlencode($ncUser) . '/';
+        $url = rtrim($prefix . ltrim($path, '/'), '/');
+        $xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<d:propfind xmlns:d=\"DAV:\">\n  <d:allprop/>\n</d:propfind>";
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST,'PROPFIND');
+        curl_setopt($ch, CURLOPT_POSTFIELDS,$xml);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER,true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER,['Authorization: Bearer '.$accessToken,'Depth: 1','Content-Type: text/xml','Accept: application/xml']);
+        $resp = curl_exec($ch);
+        $code = curl_getinfo($ch,CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return ['status'=>$code,'body'=>$resp];
+    }
+    public function downloadFile(string $ncUser,string $path,string $accessToken){
+        $prefix = $this->baseUrl . '/remote.php/dav/files/' . rawurlencode($ncUser) . '/';
+        $url = rtrim($prefix . ltrim($path, '/'), '/');
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER,true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER,['Authorization: Bearer '.$accessToken]);
+        $body = curl_exec($ch);
+        $info = curl_getinfo($ch);
+        curl_close($ch);
+        return ['status'=>$info['http_code'] ?? 200,'body'=>$body,'info'=>$info];
+    }
+}
+
+/* ----------------------- src/TokenStore.php ----------------------- */
+<?php
+namespace Faillink\Src;
+
+class TokenStore {
+    private $pdo;
+    public function __construct(\PDO $pdo){ $this->pdo = $pdo; }
+    public function get($userId){
+        $stmt = $this->pdo->prepare('SELECT nextcloud_username, nc_access_token, nc_refresh_token, nc_token_expires_at FROM users WHERE id=:id');
+        $stmt->execute([':id'=>$userId]); return $stmt->fetch(\PDO::FETCH_ASSOC);
+    }
+    public function save($userId,$ncUser,$accessToken,$refreshToken,$expiresIn){
+        $expiresAt = time() + (int)$expiresIn - 30;
+        $stmt = $this->pdo->prepare('SELECT id FROM users WHERE id=:id'); $stmt->execute([':id'=>$userId]);
+        if ($stmt->fetch()){
+            $upd = $this->pdo->prepare('UPDATE users SET nextcloud_username=:ncuser, nc_access_token=:at, nc_refresh_token=:rt, nc_token_expires_at=:exp WHERE id=:id');
+            $upd->execute([':ncuser'=>$ncUser,':at'=>$accessToken,':rt'=>$refreshToken,':exp'=>$expiresAt,':id'=>$userId]);
+        } else {
+            $ins = $this->pdo->prepare('INSERT INTO users (id, username, nextcloud_username, nc_access_token, nc_refresh_token, nc_token_expires_at) VALUES (:id,:u,:ncuser,:at,:rt,:exp)');
+            $ins->execute([':id'=>$userId,':u'=>'erp_user_'.$userId,':ncuser'=>$ncUser,':at'=>$accessToken,':rt'=>$refreshToken,':exp'=>$expiresAt]);
+        }
+    }
+}
+
+/* ----------------------- src/FaillinkModel.php ----------------------- */
+<?php
+namespace Faillink\Src;
+
+class FaillinkModel {
+    private $pdo; public function __construct(\PDO $pdo){ $this->pdo = $pdo; }
+    public function create(array $data){
+        $sql = 'INSERT INTO faillinks (user_id,nextcloud_path,nextcloud_fileid,name,mime,size,raw_metadata) VALUES (:user_id,:nextcloud_path,:nextcloud_fileid,:name,:mime,:size,:raw_metadata)';
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([':user_id'=>$data['user_id'],':nextcloud_path'=>$data['nextcloud_path'],':nextcloud_fileid'=>$data['nextcloud_fileid'] ?? null,':name'=>$data['name'],':mime'=>$data['mime'] ?? null,':size'=>$data['size'] ?? null,':raw_metadata'=>isset($data['raw_metadata'])?json_encode($data['raw_metadata']):null]);
+        return $this->pdo->lastInsertId();
+    }
+    public function find($id){ $stmt = $this->pdo->prepare('SELECT * FROM faillinks WHERE id=:id'); $stmt->execute([':id'=>$id]); return $stmt->fetch(\PDO::FETCH_ASSOC); }
+}
+
+/* ----------------------- src/UserModel.php ----------------------- */
+<?php
+namespace Faillink\Src;
+
+class UserModel {
+    private $pdo; public function __construct(\PDO $pdo){ $this->pdo = $pdo; }
+    public function createDemoIfNotExists(){
+        $stmt = $this->pdo->query('SELECT id FROM users LIMIT 1'); $row = $stmt->fetch(\PDO::FETCH_ASSOC); if ($row) return $row['id'];
+        $ins = $this->pdo->prepare('INSERT INTO users (username) VALUES (:u)'); $ins->execute([':u'=>'demo']); return $this->pdo->lastInsertId();
+    }
+}
+
+/* ----------------------- migrations/create_tables.sql ----------------------- */
+-- CREATE TABLE users ( id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, nextcloud_username TEXT, nc_access_token TEXT, nc_refresh_token TEXT, nc_token_expires_at INTEGER, created_at DATETIME DEFAULT (datetime('now')) );
+-- CREATE TABLE faillinks ( id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, nextcloud_path TEXT NOT NULL, nextcloud_fileid TEXT, name TEXT NOT NULL, mime TEXT, size INTEGER, raw_metadata TEXT, created_at DATETIME DEFAULT (datetime('now')) );
+
+/* ----------------------- public/index.php ----------------------- */
+<?php
+// Front controller — adapt into your ERP. Keep public/ as webroot.
+require_once __DIR__ . '/../config.php'; $config = require __DIR__ . '/../config.php';
+// Simple autoload for Faillink\Src\* classes
+spl_autoload_register(function($c){ $base = __DIR__ . '/../src/'; $prefix = 'Faillink\\Src\\'; if (strpos($c,$prefix)===0){ $rel = substr($c,strlen($prefix)); $p = $base . str_replace('\\','/',$rel) . '.php'; if (file_exists($p)) require $p; }});
+session_start();
+$pdo = new PDO($config['db_dsn'],$config['db_user'],$config['db_pass']); $pdo->setAttribute(PDO::ATTR_ERRMODE,PDO::ERRMODE_EXCEPTION);
+$nc = new \Faillink\Src\NCClient($config['nextcloud']);
+$tokenStore = new \Faillink\Src\TokenStore($pdo);
+$faillinkModel = new \Faillink\Src\FaillinkModel($pdo);
+$userModel = new \Faillink\Src\UserModel($pdo);
+if (empty($_SESSION['erp_user_id'])) $_SESSION['erp_user_id'] = $userModel->createDemoIfNotExists();
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+function json($d,$c=200){ http_response_code($c); header('Content-Type: application/json'); echo json_encode($d); exit; }
+
+if ($path === '/nextcloud/connect'){
+    $state = base64_encode(json_encode(['uid'=>$_SESSION['erp_user_id'],'nonce'=>bin2hex(random_bytes(8))])); $_SESSION['nc_oauth_state']=$state; header('Location: '.$nc->getAuthorizeUrl($state)); exit;
+}
+if ($path === '/nextcloud/callback'){
+    $code = $_GET['code'] ?? null; $state = $_GET['state'] ?? null; if (!$code || $state !== ($_SESSION['nc_oauth_state'] ?? null)) { echo 'Invalid OAuth response'; exit; }
+    $resp = $nc->fetchAccessToken($code); if ($resp['status']>=400 || empty($resp['json'])){ echo 'Token exchange failed'; exit; }
+    $j = $resp['json']; $accessToken=$j['access_token']; $refreshToken=$j['refresh_token'] ?? null; $expiresIn=$j['expires_in'] ?? 3600; $ncUser = $j['user'] ?? 'unknown'; $tokenStore->save($_SESSION['erp_user_id'],$ncUser,$accessToken,$refreshToken,$expiresIn); echo '<h3>Connected</h3><p>Close this window and return to ERP.</p>'; exit;
+}
+if ($path === '/nextcloud/list'){
+    $userId = $_SESSION['erp_user_id']; $qPath = $_GET['path'] ?? '/'; $tokens = $tokenStore->get($userId); if (!$tokens) json(['error'=>'no_tokens'],401);
+    // refresh if expired
+    if ($tokens['nc_token_expires_at'] <= time()+10){ $r = $nc->refreshToken($tokens['nc_refresh_token']); if ($r['status']<400){ $j=$r['json']; $tokenStore->save($userId,$tokens['nextcloud_username'],$j['access_token'],$j['refresh_token'] ?? $tokens['nc_refresh_token'],$j['expires_in'] ?? 3600); $tokens=$tokenStore->get($userId);} else { json(['error'=>'refresh_failed'],401); }}
+    $itemsResp = $nc->propfind($tokens['nextcloud_username'],$qPath,$tokens['nc_access_token']); if ($itemsResp['status']>=400) json(['error'=>'propfind_failed'], $itemsResp['status']);
+    $xml = @simplexml_load_string($itemsResp['body']); if (!$xml) json([]);
+    $items=[]; foreach ($xml->response as $r){ $href=(string)$r->href; $prop=$r->propstat->prop ?? null; $name=basename(urldecode($href)); $isDir=false; if ($prop && isset($prop->resourcetype->collection)) $isDir=true; $size=isset($prop->getcontentlength)?(int)$prop->getcontentlength:null; $mime=isset($prop->getcontenttype)?(string)$prop->getcontenttype:null; $items[]=['href'=>$href,'name'=>$name,'is_dir'=>$isDir,'size'=>$size,'mime'=>$mime]; }
+    json($items);
+}
+if ($path === '/nextcloud/pick' && $_SERVER['REQUEST_METHOD'] === 'POST'){
+    $body = json_decode(file_get_contents('php://input'), true); if (!$body || empty($body['href']) || empty($body['name'])) json(['error'=>'invalid_payload'],400);
+    $userId = $_SESSION['erp_user_id']; $tokens = $tokenStore->get($userId); if (!$tokens) json(['error'=>'no_tokens'],401);
+    $basePrefix = rtrim($config['nextcloud']['base_url'],'/') . '/remote.php/dav/files/' . rawurlencode($tokens['nextcloud_username']) . '/'; $relPath = $body['href']; if (strpos($relPath,$basePrefix)===0) $relPath = substr($relPath, strlen($basePrefix)); else{ $u=parse_url($relPath); $relPath = isset($u['path'])? ltrim(preg_replace('#/remote.php/dav/files/[^/]+/#','',$u['path']), '/'): $body['href']; }
+    $id = $faillinkModel->create(['user_id'=>$userId,'nextcloud_path'=>$relPath,'nextcloud_fileid'=>null,'name'=>$body['name'],'mime'=>$body['mime'] ?? null,'size'=>$body['size'] ?? null,'raw_metadata'=>$body]); json(['id'=>$id,'status'=>'ok']);
+}
+if ($path === '/faillink/download'){
+    $userId = $_SESSION['erp_user_id']; $id = $_GET['id'] ?? null; if (!$id) { http_response_code(400); echo 'missing id'; exit; }
+    $record = $faillinkModel->find($id); if (!$record) { http_response_code(404); echo 'not found'; exit; }
+    if ((int)$record['user_id'] !== (int)$userId) { http_response_code(403); echo 'forbidden'; exit; }
+    $tokens = $tokenStore->get($userId); if (!$tokens) { http_response_code(401); echo 'no tokens'; exit; }
+    if ($tokens['nc_token_expires_at'] <= time()+10){ $r = $nc->refreshToken($tokens['nc_refresh_token']); if ($r['status']<400){ $j=$r['json']; $tokenStore->save($userId,$tokens['nextcloud_username'],$j['access_token'],$j['refresh_token'] ?? $tokens['nc_refresh_token'],$j['expires_in'] ?? 3600); $tokens=$tokenStore->get($userId);} else { http_response_code(401); echo 'refresh failed'; exit; }}
+    $dl = $nc->downloadFile($tokens['nextcloud_username'],$record['nextcloud_path'],$tokens['nc_access_token']); if ($dl['status']>=400){ http_response_code($dl['status']); echo 'download failed'; exit; }
+    $contentType = $record['mime'] ?: ($dl['info']['content_type'] ?? 'application/octet-stream'); header('Content-Type: '.$contentType); header('Content-Disposition: inline; filename="'.basename($record['name']).'"'); echo $dl['body']; exit;
+}
+// default info page
+header('Content-Type: text/html'); echo '<h1>Nextcloud Private Picker (Modular Demo)</h1><p>See /public/picker.html for embeddable Vue picker.</p>';
+
+/* ----------------------- public/picker.html (Vue CDN embeddable) ----------------------- */
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Nextcloud Picker (Embed)</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    .picker { font-family: Arial, sans-serif; padding: 12px; border: 1px solid #eee; border-radius: 6px; }
+    .breadcrumbs{font-size:0.9em;margin-bottom:8px}
+    ul{list-style:none;padding:0}
+    li{margin:6px 0}
+    button{margin-left:8px}
+  </style>
+</head>
+<body>
+<div id="nextcloud-picker" class="picker"></div>
+
+<script>
+const { createApp, ref, onMounted } = Vue;
+createApp({
+  template: `
+    <div>
+      <div class="breadcrumbs">Path: {{ path }}</div>
+      <div style="margin-bottom:8px">
+        <button @click="connect">Connect Nextcloud</button>
+      </div>
+      <ul>
+        <li v-for="item in items" :key="item.href">
+          <template v-if="item.is_dir">
+            <button @click="open(item)">📁 {{ item.name }}</button>
+          </template>
+          <template v-else>
+            <span>{{ item.name }} ({{ item.size || '-' }})</span>
+            <button @click="pick(item)">Pick</button>
+            <button @click="preview(item)">Preview</button>
+          </template>
+        </li>
+      </ul>
+    </div>
+  `,
+  setup(){
+    const items = ref([]);
+    const path = ref('/');
+    async function fetchList(){
+      const res = await fetch(`/nextcloud/list?path=${encodeURIComponent(path.value)}`,{credentials:'include'});
+      if (res.status === 401){ alert('Please connect your Nextcloud account first.'); return; }
+      items.value = await res.json();
+    }
+    function open(dir){ path.value = dir.href; fetchList(); }
+    function connect(){ window.open('/nextcloud/connect','nc_connect','width=900,height=700'); }
+    async function pick(item){
+      const res = await fetch('/nextcloud/pick',{ method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ href:item.href, name:item.name, size:item.size, mime:item.mime }) });
+      const j = await res.json(); if (j.id) { alert('Picked: ' + item.name); window.dispatchEvent(new CustomEvent('faillink-picked',{detail:j})); }
+    }
+    function preview(item){
+      // open proxied download in new tab (ERP will check permission)
+      // We need the faillink id — but for quick preview we can stream directly using /faillink/download after pick
+      // For now prompt the user to pick then preview
+      alert('To preview, pick the file first (click Pick). Then use ERP UI to open it.');
+    }
+    onMounted(fetchList);
+    return { items, path, open, pick, connect, preview };
+  }
+}).mount('#nextcloud-picker');
+</script>
+</body>
+</html>
+
+/* ----------------------- public/.htaccess (optional) ----------------------- */
+# Rewrite all requests to index.php if using Apache
+# RewriteEngine On
+# RewriteCond %{REQUEST_FILENAME} !-f
+# RewriteRule ^ index.php [QSA,L]
+
+// End of bundle. Copy each section into individual files as listed at the top.

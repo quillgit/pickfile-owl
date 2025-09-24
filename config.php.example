@@ -1,0 +1,13 @@
+<?php
+return [
+    'db_dsn' => 'sqlite:' . __DIR__ . '/data/faillink_oauth.sqlite',
+    'db_user' => null,
+    'db_pass' => null,
+    'nextcloud' => [
+        'base_url' => 'https://cloud.mktr.co.id',
+        'client_id' => 'l0CTQcrcrRF56lgALv0qDWwOaLGWkyEfLcZcg0Me9dhJy1pwAzqd6Q6Drsn905Hl',
+        'client_secret' => 'GPOVueHv9JrjQxRrQfhzUDjVWpO3S8ndvj51XEqQFkJ5w9IwMMwDx7ukodSQXRdF',
+        'redirect_uri' => null, // auto-detect
+    ],
+    'app_secret' => 'change_me_random',
+];
